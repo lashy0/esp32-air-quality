@@ -34,8 +34,16 @@ typedef struct {
     bool reset_level;
     int x_gap;
     int y_gap;
+    uint8_t fb_bits_per_pixel;
     uint8_t madctl_val;
+    uint8_t colmod_val;
 } st7789_panel_t;
+
+typedef struct {
+    uint8_t cmd;
+    uint8_t data[16];
+    uint8_t databytes;
+} lcd_init_cmd_t;
 
 esp_err_t esp_lcd_new_panel_st7789(const esp_lcd_panel_io_handle_t io,
                                    const esp_lcd_panel_dev_config_t *panel_dev_cfg,
@@ -55,9 +63,35 @@ esp_err_t esp_lcd_new_panel_st7789(const esp_lcd_panel_io_handle_t io,
         ESP_GOTO_ON_ERROR(gpio_config(&io_conf), err, TAG, "configure GPIO for RST line failed");
     }
 
-    st7789->madctl_val = 0x00;
+    switch (panel_dev_cfg->rgb_ele_order) {
+    case LCD_RGB_ELEMENT_ORDER_RGB:
+        st7789->madctl_val = 0x00;
+        break;
+    case LCD_RGB_ELEMENT_ORDER_BGR:
+        st7789->madctl_val = 0x08;
+        break;
+    default:
+        ESP_GOTO_ON_FALSE(false, ESP_ERR_NOT_SUPPORTED, err, TAG, "unsupported RGB element order");
+        break;
+    }
+
+    uint8_t fb_bits_per_pixel = 0;
+    switch (panel_dev_cfg->bits_per_pixel) {
+    case 16:
+        st7789->colmod_val = 0x55;
+        fb_bits_per_pixel = 16;
+        break;
+    case 18:
+        st7789->colmod_val = 0x66;
+        fb_bits_per_pixel = 24;
+        break;
+    default:
+        ESP_GOTO_ON_FALSE(false, ESP_ERR_NOT_SUPPORTED, err, TAG, "unsupported pixel width");
+        break;
+    }
 
     st7789->io = io;
+    st7789->fb_bits_per_pixel = fb_bits_per_pixel;
     st7789->reset_gpio_num = panel_dev_cfg->reset_gpio_num;
     st7789->reset_level = panel_dev_cfg->flags.reset_active_high;
     st7789->base.del = panel_st7789_del;
@@ -104,7 +138,6 @@ static esp_err_t panel_st7789_reset(esp_lcd_panel_t *panel)
     st7789_panel_t *st7789 = __containerof(panel, st7789_panel_t, base);
     esp_lcd_panel_io_handle_t io = st7789->io;
 
-    // perform hardware reset
     if (st7789->reset_gpio_num >= 0) {
         gpio_set_level(st7789->reset_gpio_num, st7789->reset_level);
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -112,7 +145,7 @@ static esp_err_t panel_st7789_reset(esp_lcd_panel_t *panel)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     else {
-        ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_SWRESET, NULL, 0), TAG, "send command failed");
+        ESP_RETURN_ON_ERROR(esp_lcd_panel_io_tx_param(io, LCD_CMD_SWRESET, NULL, 0), TAG, "send reset failed");
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
@@ -125,73 +158,99 @@ static esp_err_t panel_st7789_init(esp_lcd_panel_t *panel)
     esp_lcd_panel_io_handle_t io = st7789->io;
     esp_err_t ret;
 
+    // Extended initialization commands for ST7789
+    // lcd_init_cmd_t st7789_init_cmds[] = {
+    //     {0x13, {0}, 0}, // NORON
+    //     // {0x36, {st7789->madctl_val}, 1}, // Memory Data Access Control
+    //     {0x36, {0x00}, 1}, // Memory Data Access Control
+    //     // {0xB6, {0x0A, 0x82}, 2},
+    //     // {0xB0, {0x00, 0xF0}, 2}, // RAMCTRL
+    //     {0x3A, {st7789->colmod_val}, 1}, // Set Color Mode
+    //     {0xB2, {0x0b, 0x0b, 0x00, 0x33, 0x33}, 5}, // PORCTRL
+    //     {0xB7, {0x75}, 1}, // GCTRL
+    //     {0xBB, {0x28}, 1}, // VCOMS
+    //     {0xC0, {0x2C}, 1}, // LCMCTRL
+    //     {0xC2, {0x01}, 1}, // VDVVRHEN
+    //     {0xC3, {0x1F}, 1}, //VRHS
+    //     // {0xC4, {0x20}, 1}, // VDVSET
+    //     {0xC6, {0x13}, 1}, // FRCTR2
+    //     {0xD0, {0xa7}, 1}, // PWCTRL1
+    //     {0xD0, {0xa4, 0xa1}, 2}, // PWCTRL1
+    //     {0xD6, {0xa1}, 1},
+    //     {0xE0, {0xf0, 0x05, 0x0a, 0x06, 0x06, 0x03, 0x2b, 0x32, 0x43, 0x36, 0x11, 0x10, 0x2b, 0x32}, 14}, // Positive Gamma Correction
+    //     {0xE1, {0xf0, 0x08, 0x0c, 0x0b, 0x09, 0x24, 0x2b, 0x22, 0x43, 0x38, 0x15, 0x16, 0x2f, 0x37}, 14}, // Negative Gamma Correction
+    //     // {0x21, {0}, 0}, // INVON
+    //     // {0x2A, {0x00, 0x00, 0x00, 0xEF}, 4}, // CASET
+    //     // {0x2B, {0x00, 0x00, 0x01, 0x3F}, 4}, // RASET
+    //     {0, {0}, 0xFF}                   // End of commands
+    // };
+
+    // lcd_init_cmd_t st7789_init_cmds[] = {
+    //     {0xCF, {0x00, 0x83, 0X30}, 3},
+    //     {0xED, {0x64, 0x03, 0X12, 0X81}, 4},
+    //     {0xE8, {0x85, 0x01, 0x79}, 3}, // PWCTRL2
+    //     {0xCB, {0x39, 0x2C, 0x00, 0x34, 0x02}, 5},
+    //     {0xF7, {0x20}, 1},
+    //     {0xEA, {0x00, 0x00}, 2},
+    //     {0xC0, {0x26}, 1}, // LCMCTRL
+    //     {0xC1, {0x11}, 1}, // IDSET
+    //     {0xC5, {0x35, 0x3E}, 2}, // VCMOFSET
+    //     {0xC7, {0xBE}, 1}, // CABCCTRL
+    //     {0x36, {0x00}, 1}, // Memory Data Access Control
+    //     {0x3A, {0x55}, 1}, // Set Color Mode
+    //     {0x21, {0}, 0}, // INVON
+    //     // {0x20, {0}, 0}, // ONVOFF
+    //     {0xB1, {0x00, 0x1B}, 2}, // RGBCTRL
+    //     {0xF2, {0x00}, 1},
+    //     {0x26, {0xa1}, 1}, // GAMSET
+    //     {0xE0, {0xD0, 0x00, 0x02, 0x07, 0x0A, 0x28, 0x32, 0x44, 0x42, 0x06, 0x0E, 0x12, 0x14, 0x17}, 14}, // Positive Gamma Correction
+    //     {0xE1, {0xD0, 0x00, 0x02, 0x07, 0x0A, 0x28, 0x31, 0x54, 0x47, 0x0E, 0x1C, 0x17, 0x1B, 0x1E}, 14}, // Negative Gamma Correction
+    //     {0x2A, {0x00, 0x00, 0x00, 0xEF}, 4}, // CASET
+    //     {0x2B, {0x00, 0x00, 0x01, 0x3F}, 4}, // RASET
+    //     {0x2C, {0}, 0}, // RAMWR
+    //     {0xB7, {0x07}, 1}, // GCTRL
+    //     {0xB6, {0x0A, 0xB2, 0x27, 0x00}, 4},
+    //     {0, {0}, 0xFF}                   // End of commands
+    // };
+
+    lcd_init_cmd_t st7789_init_cmds[] = {
+        {0x36, {st7789->madctl_val}, 1}, // Memory Data Access Control
+        {0x3A, {st7789->colmod_val}, 1}, // Set Color Mode
+        {0xB0, {0x00, 0xF0}, 2}, // RAMCTRL
+        {0, {0}, 0xFF},
+    };
+
     // Software Reset
-    ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_SWRESET, NULL, 0);
+    ret = esp_lcd_panel_io_tx_param(io, 0x01, NULL, 0);
     ESP_RETURN_ON_ERROR(ret, TAG, "failed to reset the panel");
     vTaskDelay(pdMS_TO_TICKS(20));
 
     // Sleep Out to wake up from sleep mode
-    ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_SLPOUT, NULL, 0);
+    ret = esp_lcd_panel_io_tx_param(io, 0x11, NULL, 0);
     ESP_RETURN_ON_ERROR(ret, TAG, "failed to wake up from sleep mode");
     vTaskDelay(pdMS_TO_TICKS(120));
 
-    // Display Inversion Off
-    ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_INVOFF, NULL, 0);
-    ESP_RETURN_ON_ERROR(ret, TAG, "failed to disable display inversion");
-
-    // Set Color Mode to 16-bit color
-    uint8_t color_mode[] = { 0x55 };
-    ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_COLMOD, color_mode, sizeof(color_mode));
-    ESP_RETURN_ON_ERROR(ret, TAG, "failed to set color mode");
-
-    // Set Display Orientation
-    // uint8_t madctl[] = { 0xC0 };  // MADCTL register setting for 90 degrees rotation
-    // ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_MADCTL, madctl, sizeof(madctl));
-    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to set memory data access control");
-
-    // Set Gamma Curve
-    uint8_t gamma_curve[] = { 0x01 };  // Gamma curve 1 (choose 0, 1, 2, or 3)
-    ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_GAMSET, gamma_curve, sizeof(gamma_curve));
-    ESP_RETURN_ON_ERROR(ret, TAG, "failed to set gamma curve");
-
-    // Positive Gamma Control
-    // uint8_t p_gamma[] = { 
-    //     0x0F, 0x1F, 0x1C, 0x2F, 0x3F, 0x3F, 0x3F, 0x2F, 0x2F, 0x1F, 
-    //     0x1C, 0x0F, 0x00, 0x00, 0x00, 0x00 
-    // };  // Example values for positive gamma (adjust based on datasheet)
-    // ret = esp_lcd_panel_io_tx_param(io, 0xE0, p_gamma, sizeof(p_gamma));
-    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to set positive gamma");
-
-    // Negative Gamma Control
-    // uint8_t n_gamma[] = { 
-    //     0x00, 0x0F, 0x1F, 0x2F, 0x3F, 0x3F, 0x3F, 0x2F, 0x2F, 0x1F, 
-    //     0x1C, 0x0F, 0x00, 0x00, 0x00, 0x00 
-    // };  // Example values for negative gamma (adjust based on datasheet)
-    // ret = esp_lcd_panel_io_tx_param(io, 0xE1, n_gamma, sizeof(n_gamma));
-    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to set negative gamma");
-
-    // Set Frame Rate
-    // uint8_t frame_rate[] = { 0x0B, 0x0B };
-    // ret = esp_lcd_panel_io_tx_param(io, 0xB1, frame_rate, sizeof(frame_rate));
-    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to set frame rate");
+    // Send initialization commands
+    uint16_t cmd = 0;
+    while (st7789_init_cmds[cmd].databytes != 0xFF) {
+        ret = esp_lcd_panel_io_tx_param(
+            io, st7789_init_cmds[cmd].cmd, st7789_init_cmds[cmd].data, st7789_init_cmds[cmd].databytes
+        );
+        ESP_RETURN_ON_ERROR(ret, TAG, "Failed to send init command");
+        vTaskDelay(pdMS_TO_TICKS(10));
+        cmd++;
+    }
 
     // Enable Display
-    ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_DISPON, NULL, 0);
-    ESP_RETURN_ON_ERROR(ret, TAG, "failed to turn on display");
-
-    // // Set the Address Window
-    // uint8_t caset[] = {0x00, 0x00, 0x00, 0x84};
-    // ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_CASET, caset, 4);  // Column address setting
-    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to set column address (CASET)");
-
-    // uint8_t raset[] = {0x00, 0x00, 0x00, 0xF0};
-    // ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_RASET, raset, 4);  // Row address setting
-    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to set row address (RASET)");
+    // ret = esp_lcd_panel_io_tx_param(io, 0x29, NULL, 0);
+    // ESP_RETURN_ON_ERROR(ret, TAG, "failed to turn on display");
+    // vTaskDelay(pdMS_TO_TICKS(100));
 
     ESP_LOGI(TAG, "ST7789 panel initialized successfully");
 
     return ESP_OK;
 }
+
 
 static esp_err_t panel_st7789_draw_bitmap(esp_lcd_panel_t *panel, int x_start, int y_start, int x_end, int y_end, const void *color_data)
 {
@@ -205,21 +264,21 @@ static esp_err_t panel_st7789_draw_bitmap(esp_lcd_panel_t *panel, int x_start, i
     y_end += st7789->y_gap;
 
     uint8_t col_addr[] = {
-        (uint8_t)(x_start >> 8), (uint8_t)(x_start & 0xFF),
-        (uint8_t)(x_end >> 8), (uint8_t)(x_end & 0xFF),
+        (uint8_t)((x_start >> 8) & 0xFF), (uint8_t)(x_start & 0xFF),
+        (uint8_t)(((x_end - 1) >> 8) & 0xFF), (uint8_t)((x_end - 1) & 0xFF),
     };
     ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_CASET, col_addr, sizeof(col_addr));
     ESP_RETURN_ON_ERROR(ret, TAG, "failed to set column address (CASET)");
 
     uint8_t row_addr[] = {
-        (uint8_t)(y_start >> 8), (uint8_t)(y_start & 0xFF),
-        (uint8_t)(y_end >> 8), (uint8_t)(y_end & 0xFF),
+        (uint8_t)((y_start >> 8) & 0xFF), (uint8_t)(y_start & 0xFF),
+        (uint8_t)(((y_end - 1) >> 8) & 0xFF), (uint8_t)((y_end - 1) & 0xFF),
     };
     ret = esp_lcd_panel_io_tx_param(io, LCD_CMD_RASET, row_addr, sizeof(row_addr));
     ESP_RETURN_ON_ERROR(ret, TAG, "failed to set row address (RASET)");
 
-    size_t len = (x_end - x_start + 1) * (y_end - y_start + 1);
-    ret = esp_lcd_panel_io_tx_color(io, LCD_CMD_RAMWR, color_data, len * 2);
+    size_t len = (x_end - x_start) * (y_end - y_start) * st7789->fb_bits_per_pixel / 8;
+    ret = esp_lcd_panel_io_tx_color(io, LCD_CMD_RAMWR, color_data, len);
     ESP_RETURN_ON_ERROR(ret, TAG, "failed to write pixel data (RAMWR)");
 
     return ESP_OK;
@@ -313,6 +372,7 @@ static esp_err_t panel_st7789_disp_sleep(esp_lcd_panel_t *panel, bool sleep)
 
     esp_err_t ret = esp_lcd_panel_io_tx_param(io, cmd, NULL, 0);
     ESP_RETURN_ON_ERROR(ret, TAG, "io tx param failed sleep");
+    vTaskDelay(pdMS_TO_TICKS(100));
 
     return ESP_OK;
 }

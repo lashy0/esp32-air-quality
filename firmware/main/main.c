@@ -10,13 +10,15 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
-#include "esp_lcd_panel_st7789.h"
+// #include "esp_lcd_panel_st7789.h"
 
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_timer.h"
 
 #include "lvgl.h"
+
+#include "st7789.h"
 
 static const char *TAG = "main";
 
@@ -70,12 +72,35 @@ static void increase_lvgl_tick(void *arg)
 void example_lvgl_demo_ui()
 {
     lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, lv_palette_main(LV_PALETTE_BLUE), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+    
+    lv_obj_t *red_bar = lv_obj_create(scr);
+    lv_obj_t *green_bar = lv_obj_create(scr);
+    lv_obj_t *blue_bar = lv_obj_create(scr);
 
-    lv_obj_t *text = lv_label_create(scr);
-    lv_label_set_text(text, "Text");
-    lv_obj_set_style_text_color(text, lv_color_white(), LV_PART_MAIN);
-    lv_obj_center(text);
+    int bar_w = lv_obj_get_width(scr) / 3;
+    int bar_h = lv_obj_get_height(scr);
+
+    // Red
+    lv_obj_set_style_radius(red_bar, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(red_bar, 0, LV_PART_MAIN);
+    lv_obj_set_size(red_bar, bar_w, bar_h);
+    lv_obj_set_pos(red_bar, 0, 0);
+    lv_obj_set_style_bg_color(red_bar, lv_color_hex(0xFF0000), LV_PART_MAIN);
+
+    // Green
+    lv_obj_set_style_radius(green_bar, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(green_bar, 0, LV_PART_MAIN);
+    lv_obj_set_size(green_bar, bar_w, bar_h);
+    lv_obj_set_pos(green_bar, bar_w, 0);
+    lv_obj_set_style_bg_color(green_bar, lv_color_hex(0x00FF00), LV_PART_MAIN);
+
+    // Blue
+    lv_obj_set_style_radius(blue_bar, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(blue_bar, 0, LV_PART_MAIN);
+    lv_obj_set_size(blue_bar, bar_w, bar_h);
+    lv_obj_set_pos(blue_bar, bar_w * 2, 0);
+    lv_obj_set_style_bg_color(blue_bar, lv_color_hex(0x0000FF), LV_PART_MAIN);
 }
 
 void app_main(void)
@@ -129,6 +154,7 @@ void app_main(void)
 
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_handle, true));
     // ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_handle, false));
     // ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_handle, true, true));
     ESP_ERROR_CHECK(esp_lcd_panel_set_gap(panel_handle, 52, 40));
